@@ -1,4 +1,4 @@
-#r "./packages/FAKE/tools/FakeLib.dll"
+module Fable.FakeHelpers
 
 open System
 open System.IO
