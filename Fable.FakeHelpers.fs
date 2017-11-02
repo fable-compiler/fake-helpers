@@ -78,7 +78,6 @@ let needsPublishing (versionRegex: Regex) (releaseNotes: ReleaseNotes) projFile 
 let pushNuget dotnetExePath (releaseNotes: ReleaseNotes) (projFiles: string list) =
     let versionRegex = Regex("<Version>(.*?)</Version>", RegexOptions.IgnoreCase)
     projFiles
-    |> Seq.map (fun projFile -> __SOURCE_DIRECTORY__ </> projFile)
     |> Seq.filter (needsPublishing versionRegex releaseNotes)
     |> Seq.iter (fun projFile ->
         let projDir = Path.GetDirectoryName(projFile)
@@ -107,11 +106,23 @@ let pushNuget dotnetExePath (releaseNotes: ReleaseNotes) (projFiles: string list
             reraise()
     )
 
-let publishPackages dotnetExePath packages =
+let publishPackages baseDir dotnetExePath (packages: string list) =
     for pkg in packages do
-        let projFile = __SOURCE_DIRECTORY__ </> (pkg + ".fsproj")
-        let projDir = Path.GetDirectoryName(projFile)
-        let release =
-            findFileUpwards "RELEASE_NOTES.md" projDir
-            |> ReleaseNotesHelper.LoadReleaseNotes
-        pushNuget dotnetExePath release [projFile]
+        let fsProj, npmProj =
+            if pkg.EndsWith(".fsproj")
+            then baseDir </> pkg, None
+            else baseDir </> (pkg + ".fsproj"), Some (baseDir </> pkg </> "package.json")
+        if File.Exists(fsProj) then
+            let projDir = Path.GetDirectoryName(fsProj)
+            let release =
+                findFileUpwards "RELEASE_NOTES.md" projDir
+                |> ReleaseNotesHelper.LoadReleaseNotes
+            pushNuget dotnetExePath release [fsProj]
+        else
+            match npmProj with
+            | Some npmProj ->
+                if File.Exists(npmProj)
+                then failwith "TODO: push npm package"
+                else failwithf "Couldn't find %s nor %s" fsProj npmProj
+            | None ->
+                failwithf "Couldn't find %s" fsProj
