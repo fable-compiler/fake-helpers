@@ -138,6 +138,8 @@ let pushNpm (releaseNotes: ReleaseNotes) build (pkgJson: string) =
             printfn "Please revert the version change in package.json"
             reraise()
 
+/// Accepts of list of tuples where the first element is an optional function
+/// to be run before publishing the package
 let publishPackages2 baseDir dotnetExePath (packages: (_*string) list) =
     for f, pkg in packages do
         let fsProj, npmProj =
