@@ -4,6 +4,7 @@ open System
 open System.IO
 open System.Text.RegularExpressions
 open Fake
+open Fake.Git
 open Fake.ReleaseNotesHelper
 
 let [<Literal>] RELEASE_NOTES = "RELEASE_NOTES.md"
@@ -161,3 +162,30 @@ let publishPackages baseDir dotnetExePath packages =
     packages
     |> List.map (fun x -> None, x)
     |> publishPackages2 baseDir dotnetExePath
+
+let githubRelease releaseNotesPath gitOwner project pushToGithub: unit =
+    let release = ReleaseNotesHelper.LoadReleaseNotes releaseNotesPath
+    let user =
+        match getBuildParam "github-user" with
+        | s when not (String.IsNullOrWhiteSpace s) -> s
+        | _ -> getUserInput "GitHub Username: "
+    let pw =
+        match getBuildParam "github-pw" with
+        | s when not (String.IsNullOrWhiteSpace s) -> s
+        | _ -> getUserPassword "GitHub Password: "
+    let remote =
+        Git.CommandHelper.getGitResult "" "remote -v"
+        |> Seq.filter (fun (s: string) -> s.EndsWith("(push)"))
+        |> Seq.tryFind (fun (s: string) -> s.Contains(gitOwner + "/" + project))
+        |> function
+            | None -> "https://github.com/" + gitOwner + "/" + project
+            | Some (s: string) -> s.Split().[0]
+
+    StageAll ""
+    Git.Commit.Commit "" (sprintf "Bump version to %s" release.NugetVersion)
+    Branches.pushBranch "" remote (Information.getBranchName "")
+
+    Branches.tag "" release.NugetVersion
+    Branches.pushTag "" remote release.NugetVersion
+
+    pushToGithub user pw release
