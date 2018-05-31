@@ -95,9 +95,21 @@ let needsPublishing silent (versionRegex: Regex) (releaseNotes: ReleaseNotes) pr
                     sprintf "Already version %s, no need to publish" releaseNotes.NugetVersion |> print
                 not sameVersion
 
-let pushNuget dotnetExePath (releaseNotes: ReleaseNotes) build (projFile: string) =
+type IPackage =
+    abstract ProjectPath: string
+    abstract PackageName: string option
+    abstract Build: (unit -> unit) option
+
+type Package =
+    static member Create(projPath, ?build, ?pkgName) =
+        { new IPackage with
+            member __.ProjectPath = projPath
+            member __.PackageName = pkgName
+            member __.Build = build }
+
+let pushNuget dotnetExePath (releaseNotes: ReleaseNotes) (pkg: IPackage) (projFile: string) =
     if needsPublishing false NUGET_VERSION releaseNotes projFile then
-        build |> Option.iter (fun build -> build())
+        pkg.Build |> Option.iter (fun build -> build())
         let projDir = Path.GetDirectoryName(projFile)
         let nugetKey =
             match environVarOrNone "NUGET_KEY" with
@@ -113,7 +125,14 @@ let pushNuget dotnetExePath (releaseNotes: ReleaseNotes) build (projFile: string
             CleanDir tempDir
             run projDir dotnetExePath ("pack -c Release -o " + tempDir)
             let pushCmd =
-                let nupkg = Directory.GetFiles(tempDir) |> Seq.head
+                let pkgName =
+                    match pkg.PackageName with
+                    | Some name -> name
+                    | None -> Path.GetFileNameWithoutExtension(projFile)
+                let nupkg =
+                    Directory.GetFiles(tempDir)
+                    |> Seq.tryFind (fun path -> path.Contains(pkgName))
+                    |> Option.defaultWith (fun () -> failwithf "Cannot find .nupgk with name %s" pkgName)
                 sprintf "nuget push %s -s nuget.org -k %s" nupkg nugetKey
             run projDir dotnetExePath pushCmd
             CleanDir tempDir
@@ -141,26 +160,27 @@ let pushNpm (releaseNotes: ReleaseNotes) build (pkgJson: string) =
 
 /// Accepts of list of tuples where the first element is an optional function
 /// to be run before publishing the package
-let publishPackages2 baseDir dotnetExePath (packages: (_*string) list) =
-    for f, pkg in packages do
+let publishPackages2 baseDir dotnetExePath (packages: IPackage list) =
+    for pkg in packages do
         let fsProj, npmProj =
-            if pkg.EndsWith(".fsproj")
-            then baseDir </> pkg, None
-            else baseDir </> (pkg + ".fsproj"), Some (baseDir </> pkg </> "package.json")
+            let projPath = pkg.ProjectPath
+            if projPath.EndsWith(".fsproj")
+            then baseDir </> projPath, None
+            else baseDir </> (projPath + ".fsproj"), Some (baseDir </> projPath </> "package.json")
         if File.Exists(fsProj) then
-            pushNuget dotnetExePath (loadReleaseNotes fsProj) f fsProj
+            pushNuget dotnetExePath (loadReleaseNotes fsProj) pkg fsProj
         else
             match npmProj with
             | Some npmProj ->
                 if File.Exists(npmProj)
-                then pushNpm (loadReleaseNotes npmProj) f npmProj
+                then pushNpm (loadReleaseNotes npmProj) pkg.Build npmProj
                 else failwithf "Couldn't find %s nor %s" fsProj npmProj
             | None ->
                 failwithf "Couldn't find %s" fsProj
 
 let publishPackages baseDir dotnetExePath packages =
     packages
-    |> List.map (fun x -> None, x)
+    |> List.map Package.Create
     |> publishPackages2 baseDir dotnetExePath
 
 let githubRelease releaseNotesPath gitOwner project pushToGithub: unit =

@@ -6,6 +6,6 @@
     <Compile Include="Fable.FakeHelpers.fs" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="FAKE.Lib" Version="4.63.2" />
+    <PackageReference Include="FAKE.Lib" Version="4.64.13" />
   </ItemGroup>
 </Project>
