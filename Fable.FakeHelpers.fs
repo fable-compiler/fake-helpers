@@ -8,8 +8,9 @@ open Fake.Git
 open Fake.ReleaseNotesHelper
 
 let [<Literal>] RELEASE_NOTES = "RELEASE_NOTES.md"
-let NUGET_VERSION = Regex("<Version>(.*?)</Version>", RegexOptions.IgnoreCase)
-let NPM_VERSION = Regex(@"""version"":\s*""(.*?)""")
+let [<Literal>] NUGET_PACKAGE_VERSION_TAG_UPPER = "PACKAGEVERSION"
+let MSBUILD_VERSION_REGEX = Regex(@"<((?:Package)?Version)>(.*?)<\/\1>", RegexOptions.IgnoreCase)
+let NPM_VERSION_REGEX = Regex(@"""version"":\s*""(.*?)""")
 
 let visitFile (visitor: string->string) (fileName : string) =
     // This code is supposed to prevent OutOfMemory exceptions
@@ -69,7 +70,7 @@ let loadReleaseNotes projFile =
     findFileUpwards RELEASE_NOTES projDir
     |> ReleaseNotesHelper.LoadReleaseNotes
 
-let needsPublishing silent (versionRegex: Regex) (releaseNotes: ReleaseNotes) projFile =
+let needsPublishing silent (readVersionInLine: string->string option) (releaseNotes: ReleaseNotes) projFile =
     let print msg =
         if not silent then
             let projName =
@@ -84,31 +85,33 @@ let needsPublishing silent (versionRegex: Regex) (releaseNotes: ReleaseNotes) pr
         false
     else
         File.ReadLines(projFile)
-        |> Seq.tryPick (fun line ->
-            let m = versionRegex.Match(line)
-            if m.Success then Some m else None)
+        |> Seq.tryPick readVersionInLine
         |> function
             | None -> failwithf "Couldn't find version in %s" projFile
-            | Some m ->
-                let sameVersion = m.Groups.[1].Value = releaseNotes.NugetVersion
+            | Some version ->
+                let sameVersion = version = releaseNotes.NugetVersion
                 if sameVersion then
                     sprintf "Already version %s, no need to publish" releaseNotes.NugetVersion |> print
                 not sameVersion
 
-type IPackage =
-    abstract ProjectPath: string
-    abstract PackageName: string option
-    abstract Build: (unit -> unit) option
+type Package(projPath, ?build, ?pkgName) =
+    member __.ProjectPath: string = projPath
+    member __.PackageName: string option = pkgName
+    member __.Build: (unit -> unit) option = build
 
-type Package =
-    static member Create(projPath, ?build, ?pkgName) =
-        { new IPackage with
-            member __.ProjectPath = projPath
-            member __.PackageName = pkgName
-            member __.Build = build }
+let splitPrerelease (version: string) =
+    let i = version.IndexOf("-")
+    if i > 0
+    then version.Substring(0, i), Some(version.Substring(i + 1))
+    else version, None
 
-let pushNuget dotnetExePath (releaseNotes: ReleaseNotes) (pkg: IPackage) (projFile: string) =
-    if needsPublishing false NUGET_VERSION releaseNotes projFile then
+let pushNuget dotnetExePath (releaseNotes: ReleaseNotes) (pkg: Package) (projFile: string) =
+    let readVersionInLine line =
+        let m = MSBUILD_VERSION_REGEX.Match(line)
+        if m.Success && m.Groups.[1].Value.ToUpper() = NUGET_PACKAGE_VERSION_TAG_UPPER
+        then Some m.Groups.[2].Value
+        else None
+    if needsPublishing false readVersionInLine releaseNotes projFile then
         pkg.Build |> Option.iter (fun build -> build())
         let projDir = Path.GetDirectoryName(projFile)
         let nugetKey =
@@ -118,8 +121,13 @@ let pushNuget dotnetExePath (releaseNotes: ReleaseNotes) (pkg: IPackage) (projFi
         // Restore dependencies here so they're updated to latest project versions
         run projDir dotnetExePath "restore"
         // Update the project file
-        (NUGET_VERSION, projFile) ||> replaceLines (fun line _ ->
-            NUGET_VERSION.Replace(line, "<Version>"+releaseNotes.NugetVersion+"</Version>") |> Some)
+        (MSBUILD_VERSION_REGEX, projFile) ||> replaceLines (fun line m ->
+            let version =
+                if m.Groups.[1].Value.ToUpper() = NUGET_PACKAGE_VERSION_TAG_UPPER
+                then releaseNotes.NugetVersion
+                else splitPrerelease releaseNotes.NugetVersion |> fst
+            let replacement = String.Format("<{0}>{1}</{0}>", m.Groups.[1].Value, version)
+            MSBUILD_VERSION_REGEX.Replace(line, replacement) |> Some)
         try
             let tempDir = projDir </> "temp"
             CleanDir tempDir
@@ -143,15 +151,18 @@ let pushNuget dotnetExePath (releaseNotes: ReleaseNotes) (pkg: IPackage) (projFi
             reraise()
 
 let pushNpm (releaseNotes: ReleaseNotes) build (pkgJson: string) =
+    let readVersionInLine line =
+        let m = NPM_VERSION_REGEX.Match(line)
+        if m.Success then Some m.Groups.[1].Value else None
     let projDir = Path.GetDirectoryName(pkgJson)
-    if needsPublishing false NPM_VERSION releaseNotes pkgJson then
+    if needsPublishing false readVersionInLine releaseNotes pkgJson then
         build |> Option.iter (fun build -> build())
         run projDir "npm" ("version " + releaseNotes.NugetVersion)
         try
             let publishCmd =
-                if releaseNotes.NugetVersion.IndexOf("-") > 0
-                then "publish --tag next"
-                else "publish"
+                match splitPrerelease releaseNotes.NugetVersion with
+                | _, Some _ -> "publish --tag next"
+                | _, None -> "publish"
             run projDir "npm" publishCmd
         with _ ->
             printfn "There's been an error when pushing project: %s" projDir
@@ -160,7 +171,7 @@ let pushNpm (releaseNotes: ReleaseNotes) build (pkgJson: string) =
 
 /// Accepts of list of tuples where the first element is an optional function
 /// to be run before publishing the package
-let publishPackages2 baseDir dotnetExePath (packages: IPackage list) =
+let publishPackages2 baseDir dotnetExePath (packages: Package list) =
     for pkg in packages do
         let fsProj, npmProj =
             let projPath = pkg.ProjectPath
@@ -180,7 +191,7 @@ let publishPackages2 baseDir dotnetExePath (packages: IPackage list) =
 
 let publishPackages baseDir dotnetExePath packages =
     packages
-    |> List.map Package.Create
+    |> List.map Package
     |> publishPackages2 baseDir dotnetExePath
 
 let githubRelease releaseNotesPath gitOwner project pushToGithub: unit =
