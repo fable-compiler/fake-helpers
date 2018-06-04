@@ -146,7 +146,9 @@ let pushNuget dotnetExePath (releaseNotes: ReleaseNotes) (pkg: Package) (projFil
                 let nupkg =
                     Directory.GetFiles(tempDir)
                     |> Seq.tryFind (fun path -> path.Contains(pkgName))
-                    |> Option.defaultWith (fun () -> failwithf "Cannot find .nupgk with name %s" pkgName)
+                    |> function
+                        | Some x -> x
+                        | None -> failwithf "Cannot find .nupgk with name %s" pkgName
                 sprintf "nuget push %s -s nuget.org -k %s" nupkg nugetKey
             run projDir dotnetExePath pushCmd
             CleanDir tempDir
