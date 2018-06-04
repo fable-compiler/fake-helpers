@@ -94,10 +94,11 @@ let needsPublishing silent (readVersionInLine: string->string option) (releaseNo
                     sprintf "Already version %s, no need to publish" releaseNotes.NugetVersion |> print
                 not sameVersion
 
-type Package(projPath, ?build, ?pkgName) =
+type Package(projPath, ?build, ?pkgName, ?extraMsBuildProps) =
     member __.ProjectPath: string = projPath
     member __.PackageName: string option = pkgName
     member __.Build: (unit -> unit) option = build
+    member __.MsBuildProps: (string*string) list = defaultArg extraMsBuildProps []
 
 let splitPrerelease (version: string) =
     let i = version.IndexOf("-")
@@ -131,7 +132,12 @@ let pushNuget dotnetExePath (releaseNotes: ReleaseNotes) (pkg: Package) (projFil
         try
             let tempDir = projDir </> "temp"
             CleanDir tempDir
-            run projDir dotnetExePath ("pack -c Release -o " + tempDir)
+            sprintf "pack -c Release %s -o %s"
+                (match pkg.MsBuildProps with
+                 | [] -> ""
+                 | props -> props |> List.map (fun (k,v) -> "/p:" + k + "=" + v) |> String.concat " ")
+                tempDir
+            |> run projDir dotnetExePath
             let pushCmd =
                 let pkgName =
                     match pkg.PackageName with
