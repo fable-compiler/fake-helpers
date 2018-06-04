@@ -133,10 +133,10 @@ let pushNuget dotnetExePath (releaseNotes: ReleaseNotes) (pkg: Package) (projFil
             let tempDir = projDir </> "temp"
             CleanDir tempDir
             sprintf "pack -c Release -o %s %s"
+                tempDir
                 (match pkg.MsBuildProps with
                  | [] -> ""
                  | props -> "/property:" + (List.map (fun (k,v) -> k+"="+v) props |> String.concat ";"))
-                tempDir
             |> run projDir dotnetExePath
             let pushCmd =
                 let pkgName =
