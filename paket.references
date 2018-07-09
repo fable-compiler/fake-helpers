@@ -1,0 +1,7 @@
+Fake.DotNet.Cli
+Fake.Core.Process
+Fake.Core.String
+Fake.Core.ReleaseNotes
+Fake.IO.FileSystem
+Fake.Tools.Git
+Fake.Core.UserInput

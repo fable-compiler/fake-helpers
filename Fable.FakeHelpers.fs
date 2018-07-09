@@ -3,9 +3,10 @@ module Fable.FakeHelpers
 open System
 open System.IO
 open System.Text.RegularExpressions
-open Fake
-open Fake.Git
-open Fake.ReleaseNotesHelper
+open Fake.Core
+open Fake.IO
+open Fake.IO.FileSystemOperators
+open Fake.Tools.Git
 
 let [<Literal>] RELEASE_NOTES = "RELEASE_NOTES.md"
 let [<Literal>] NUGET_PACKAGE_VERSION_TAG_UPPER = "PACKAGEVERSION"
@@ -51,15 +52,19 @@ let rec findFileUpwards fileName dir =
 let run workingDir fileName args =
     printfn "CWD: %s" workingDir
     let fileName, args =
-        if EnvironmentHelper.isUnix
+        if Environment.isUnix
         then fileName, args
         else "cmd", ("/C " + fileName + " " + args)
-    let ok =
-        execProcess (fun info ->
-            info.FileName <- fileName
-            info.WorkingDirectory <- workingDir
-            info.Arguments <- args) TimeSpan.MaxValue
-    if not ok then
+    let result =
+        Process.execSimple
+            (fun info ->
+                { info with
+                    FileName = fileName
+                    WorkingDirectory = workingDir
+                    Arguments = args
+                }) TimeSpan.MaxValue
+
+    if result <> 0 then
         failwithf "'%s> %s %s' task failed" workingDir fileName args
 
 let loadReleaseNotes projFile =
@@ -68,9 +73,9 @@ let loadReleaseNotes projFile =
         then Path.GetDirectoryName(projFile)
         else projFile
     findFileUpwards RELEASE_NOTES projDir
-    |> ReleaseNotesHelper.LoadReleaseNotes
+    |> ReleaseNotes.load
 
-let needsPublishing silent (readVersionInLine: string->string option) (releaseNotes: ReleaseNotes) projFile =
+let needsPublishing silent (readVersionInLine: string->string option) (releaseNotes: ReleaseNotes.ReleaseNotes) projFile =
     let print msg =
         if not silent then
             let projName =
@@ -106,7 +111,7 @@ let splitPrerelease (version: string) =
     then version.Substring(0, i), Some(version.Substring(i + 1))
     else version, None
 
-let pushNuget dotnetExePath (releaseNotes: ReleaseNotes) (pkg: Package) (projFile: string) =
+let pushNuget dotnetExePath (releaseNotes: ReleaseNotes.ReleaseNotes) (pkg: Package) (projFile: string) =
     let readVersionInLine line =
         let m = MSBUILD_VERSION_REGEX.Match(line)
         if m.Success && m.Groups.[1].Value.ToUpper() = NUGET_PACKAGE_VERSION_TAG_UPPER
@@ -116,7 +121,7 @@ let pushNuget dotnetExePath (releaseNotes: ReleaseNotes) (pkg: Package) (projFil
         pkg.Build |> Option.iter (fun build -> build())
         let projDir = Path.GetDirectoryName(projFile)
         let nugetKey =
-            match environVarOrNone "NUGET_KEY" with
+            match Environment.environVarOrNone "NUGET_KEY" with
             | Some nugetKey -> nugetKey
             | None -> failwith "The Nuget API key must be set in a NUGET_KEY environmental variable"
         // Restore dependencies here so they're updated to latest project versions
@@ -131,7 +136,7 @@ let pushNuget dotnetExePath (releaseNotes: ReleaseNotes) (pkg: Package) (projFil
             MSBUILD_VERSION_REGEX.Replace(line, replacement) |> Some)
         try
             let tempDir = projDir </> "temp"
-            CleanDir tempDir
+            Shell.cleanDir tempDir
             sprintf "pack -c Release -o %s %s"
                 tempDir
                 (match pkg.MsBuildProps with
@@ -151,14 +156,14 @@ let pushNuget dotnetExePath (releaseNotes: ReleaseNotes) (pkg: Package) (projFil
                         | None -> failwithf "Cannot find .nupgk with name %s" pkgName
                 sprintf "nuget push %s -s nuget.org -k %s" nupkg nugetKey
             run projDir dotnetExePath pushCmd
-            CleanDir tempDir
+            Shell.cleanDir tempDir
         with _ ->
             Path.GetFileNameWithoutExtension(projFile)
             |> printfn "There's been an error when pushing project: %s"
             printfn "Please revert the version change in .fsproj"
             reraise()
 
-let pushNpm (releaseNotes: ReleaseNotes) build (pkgJson: string) =
+let pushNpm (releaseNotes: ReleaseNotes.ReleaseNotes) build (pkgJson: string) =
     let readVersionInLine line =
         let m = NPM_VERSION_REGEX.Match(line)
         if m.Success then Some m.Groups.[1].Value else None
@@ -203,25 +208,25 @@ let publishPackages baseDir dotnetExePath packages =
     |> publishPackages2 baseDir dotnetExePath
 
 let githubRelease releaseNotesPath gitOwner project pushToGithub: unit =
-    let release = ReleaseNotesHelper.LoadReleaseNotes releaseNotesPath
+    let release = ReleaseNotes.load releaseNotesPath
     let user =
-        match getBuildParam "github-user" with
+        match Environment.environVarOrDefault "github-user" String.Empty with
         | s when not (String.IsNullOrWhiteSpace s) -> s
-        | _ -> getUserInput "GitHub Username: "
+        | _ ->  UserInput.getUserInput "GitHub Username: "
     let pw =
-        match getBuildParam "github-pw" with
+        match Environment.environVarOrDefault "github-pw" String.Empty with
         | s when not (String.IsNullOrWhiteSpace s) -> s
-        | _ -> getUserPassword "GitHub Password: "
+        | _ -> UserInput.getUserPassword "GitHub Password: "
     let remote =
-        Git.CommandHelper.getGitResult "" "remote -v"
+        CommandHelper.getGitResult "" "remote -v"
         |> Seq.filter (fun (s: string) -> s.EndsWith("(push)"))
         |> Seq.tryFind (fun (s: string) -> s.Contains(gitOwner + "/" + project))
         |> function
             | None -> "https://github.com/" + gitOwner + "/" + project
             | Some (s: string) -> s.Split().[0]
 
-    StageAll ""
-    Git.Commit.Commit "" (sprintf "Bump version to %s" release.NugetVersion)
+    Staging.stageAll ""
+    Commit.exec "" (sprintf "Bump version to %s" release.NugetVersion)
     Branches.pushBranch "" remote (Information.getBranchName "")
 
     Branches.tag "" release.NugetVersion

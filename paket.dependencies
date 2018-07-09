@@ -1,0 +1,11 @@
+source https://www.nuget.org/api/v2
+framework: netstandard2.0
+storage:none
+
+nuget Fake.DotNet.Cli
+nuget Fake.Core.Process
+nuget Fake.Core.String
+nuget Fake.Core.ReleaseNotes
+nuget Fake.IO.FileSystem
+nuget Fake.Tools.Git
+nuget Fake.Core.UserInput
